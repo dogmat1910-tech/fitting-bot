@@ -1,15 +1,17 @@
 # 👗 Fitting Bot — Telegram-примерочная
 
-Минимальный MVP: пользователь присылает альбом из 2 фото (себя + вещь), бот возвращает результат виртуальной примерки через [FASHN AI](https://fashn.ai/).
+Минимальный MVP: пользователь присылает альбом из 2 фото (себя + вещь), бот возвращает результат виртуальной примерки.
+
+**Бесплатный вариант** — использует публичный Hugging Face Space [yisol/IDM-VTON](https://huggingface.co/spaces/yisol/IDM-VTON) через `gradio_client`. Платить не нужно, но обработка занимает 1–3 минуты и Space иногда перегружен.
 
 ## Стек
 
 - Python 3.10+
-- [aiogram 3](https://docs.aiogram.dev/) — Telegram-бот
-- [httpx](https://www.python-httpx.org/) — HTTP-клиент для FASHN API
-- [FASHN AI](https://fashn.ai/) — виртуальная примерка (платный API с free trial)
+- [aiogram 3](https://docs.aiogram.dev/) — Telegram-бот (long polling)
+- [gradio_client](https://www.gradio.app/docs/python-client/introduction) — вызов HF Space
+- [IDM-VTON](https://huggingface.co/spaces/yisol/IDM-VTON) — open-source нейросеть для try-on
 
-Бот работает на **long polling** — публичный IP/домен не нужен. Запускается прямо на ноуте.
+Бот работает на long polling — публичный IP/домен не нужен. Запускается на ноуте, на сервере, где угодно с интернетом.
 
 ## Быстрый старт (macOS)
 
@@ -17,6 +19,9 @@
 
 ```bash
 git clone https://github.com/dogmat1910-tech/fitting-bot.git
+```
+
+```bash
 cd fitting-bot
 ```
 
@@ -42,9 +47,17 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Открой `.env` в любом редакторе и вставь:
+Открой `.env`:
+
+```bash
+open -e .env
+```
+
+Вставь:
 - `BOT_TOKEN` — токен от [@BotFather](https://t.me/BotFather)
-- `FASHN_API_KEY` — ключ с https://app.fashn.ai/api
+- `HF_TOKEN` (опционально) — токен с https://huggingface.co/settings/tokens (тип **Read**). Без него тоже работает, но с токеном выше лимиты.
+
+Сохрани файл.
 
 ### 5. Запусти бота
 
@@ -52,27 +65,31 @@ cp .env.example .env
 python bot.py
 ```
 
-В терминале появится `Bot starting...` — значит работает. Открой своего бота в Telegram, отправь `/start`, потом альбом из 2 фото.
+Увидишь `Bot starting...` — значит работает. Открой своего бота в Telegram, отправь `/start`, потом альбом из 2 фото.
 
 ## Как пользоваться
 
 1. `/start` в чате с ботом
-2. Прикрепи 2 фото **одним альбомом** (скрепка → выбери обе фотки):
-   - 1-я: твоё фото в полный рост
-   - 2-я: фото вещи (одежда, желательно на однотонном фоне)
-3. Подожди 20–40 секунд → получи результат
+2. Прикрепи **2 фото одним альбомом** (скрепка → выбери обе фотки):
+   - 1-я: твоё фото в полный рост (на однотонном фоне работает лучше)
+   - 2-я: фото вещи
+3. Подожди 1–3 минуты → получи результат
 
-## Архитектура
+## Если HF Space не отвечает
 
-```
-Telegram → aiogram (long polling) → FASHN /run → poll /status → отправка фото
-```
+Бесплатные Space-ы периодически:
+- Засыпают (cold start ~30 сек после простоя)
+- Перегружены (длинная очередь)
+- Падают (GPU OOM, OOM памяти)
 
-Состояние не хранится: фотки берутся прямо по `file_id` из Telegram, FASHN качает их по URL.
+Если бот выдаёт ошибку — попробуй через минуту, или замени `HF_SPACE` в `.env` на альтернативный:
+- `levihsu/OOTDiffusion`
+- `Kwai-Kolors/Kolors-Virtual-Try-On`
 
 ## Что дальше (после MVP)
 
-- 🗄 SQLite — сохранять гардероб юзера
-- 👗 Сборка луков из сохранённого гардероба
-- 💳 Монетизация (Telegram Stars / ЮKassa)
-- 🚀 Деплой на VPS с pm2/systemd
+- 💳 Перейти на платный FASHN AI (~$0.04 за примерку) — стабильно, быстро
+- 🗄 SQLite — гардероб юзера
+- 👗 Сборка луков
+- 🚀 Деплой на VPS с pm2
+- 💰 Монетизация (Telegram Stars / ЮKassa)

@@ -1,21 +1,22 @@
 import asyncio
 import logging
 import os
+import tempfile
+from pathlib import Path
 
-import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 from dotenv import load_dotenv
+from gradio_client import Client, handle_file
 
 load_dotenv()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-FASHN_API_KEY = os.environ["FASHN_API_KEY"]
-FASHN_BASE = "https://api.fashn.ai/v1"
-FASHN_MODEL = os.getenv("FASHN_MODEL", "tryon-v1.6")
+HF_SPACE = os.getenv("HF_SPACE", "yisol/IDM-VTON")
+HF_TOKEN = os.getenv("HF_TOKEN") or None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,13 +33,13 @@ WELCOME = (
     "Привет! 👗 Я — бот-примерочная.\n\n"
     "Пришли мне <b>ОДНИМ альбомом 2 фото</b>:\n"
     "1️⃣ Своё фото в полный рост\n"
-    "2️⃣ Фото вещи, которую хочешь примерить\n\n"
+    "2️⃣ Фото вещи (одежды), которую хочешь примерить\n\n"
     "💡 В Telegram: жми скрепку 📎 → выбери обе фотки → отправь.\n\n"
-    "⏱ Обработка занимает 20-40 секунд."
+    "⏱ Примерка занимает 1–3 минуты (бесплатная нейросеть, иногда очередь)."
 )
 
 
-class FashnError(Exception):
+class TryOnError(Exception):
     pass
 
 
@@ -57,7 +58,7 @@ async def handle_album_photo(message: Message) -> None:
 
 
 async def _process_album(gid: str) -> None:
-    # Wait for the rest of the album to arrive (Telegram sends each photo as a separate update).
+    # Wait for the rest of the album messages to arrive.
     await asyncio.sleep(1.5)
     photos = album_buffer.pop(gid, [])
     if not photos:
@@ -72,74 +73,74 @@ async def _process_album(gid: str) -> None:
     photos.sort(key=lambda m: m.message_id)
     model_msg, garment_msg = photos[0], photos[1]
 
-    status = await model_msg.answer("⏳ Готовлю примерку, ~30 секунд...")
+    status = await model_msg.answer("⏳ Скачиваю фото...")
     await bot.send_chat_action(model_msg.chat.id, ChatAction.UPLOAD_PHOTO)
 
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        try:
+            model_path = await _download_photo(model_msg.photo[-1].file_id, tmp_dir / "model.jpg")
+            garment_path = await _download_photo(garment_msg.photo[-1].file_id, tmp_dir / "garment.jpg")
+
+            await status.edit_text("⏳ Примеряю на бесплатной нейросети (1–3 минуты)...")
+            result_path = await asyncio.to_thread(_try_on, model_path, garment_path)
+
+            await model_msg.answer_photo(
+                FSInputFile(result_path),
+                caption="Готово! 💃 Хочешь ещё — присылай новый альбом.",
+            )
+            await status.delete()
+        except TryOnError as e:
+            log.warning("TryOn error: %s", e)
+            await status.edit_text(
+                f"❌ Не получилось: {e}\n\n"
+                "Совет: попробуй повторить или другие фото. "
+                "Бесплатный сервер бывает перегружен — иногда помогает подождать пару минут."
+            )
+        except Exception as e:
+            log.exception("Unexpected error in _process_album")
+            await status.edit_text(f"❌ Сбой: <code>{e}</code>")
+
+
+async def _download_photo(file_id: str, dest: Path) -> Path:
+    file = await bot.get_file(file_id)
+    await bot.download_file(file.file_path, destination=dest)
+    return dest
+
+
+def _try_on(model_path: Path, garment_path: Path) -> str:
     try:
-        model_url = await _telegram_file_url(model_msg.photo[-1].file_id)
-        garment_url = await _telegram_file_url(garment_msg.photo[-1].file_id)
-        result_url = await _try_on(model_url, garment_url)
-        await model_msg.answer_photo(
-            result_url,
-            caption="Готово! 💃 Хочешь ещё — присылай новый альбом.",
-        )
-        await status.delete()
-    except FashnError as e:
-        log.warning("FASHN error: %s", e)
-        await status.edit_text(
-            f"❌ Не получилось: {e}\n\n"
-            "Совет: фото человека в полный рост на однотонном фоне работает лучше всего."
+        client = Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
+    except Exception as e:
+        raise TryOnError(f"Не удалось подключиться к Hugging Face Space ({HF_SPACE}): {e}")
+
+    try:
+        result = client.predict(
+            dict={
+                "background": handle_file(str(model_path)),
+                "layers": [],
+                "composite": None,
+            },
+            garm_img=handle_file(str(garment_path)),
+            garment_des="clothing",
+            is_checked=True,
+            is_checked_crop=False,
+            denoise_steps=30,
+            seed=42,
+            api_name="/tryon",
         )
     except Exception as e:
-        log.exception("Unexpected error in _process_album")
-        await status.edit_text(f"❌ Сбой: <code>{e}</code>")
+        raise TryOnError(f"Нейросеть вернула ошибку: {str(e)[:200]}")
 
-
-async def _telegram_file_url(file_id: str) -> str:
-    file = await bot.get_file(file_id)
-    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-
-
-async def _try_on(model_url: str, garment_url: str) -> str:
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        run = await client.post(
-            f"{FASHN_BASE}/run",
-            headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
-            json={
-                "model_name": FASHN_MODEL,
-                "inputs": {
-                    "model_image": model_url,
-                    "garment_image": garment_url,
-                    "category": "auto",
-                },
-            },
-        )
-        if run.status_code >= 400:
-            raise FashnError(f"FASHN /run {run.status_code}: {run.text[:200]}")
-        data = run.json()
-        if data.get("error"):
-            raise FashnError(str(data["error"]))
-        pred_id = data["id"]
-        log.info("FASHN prediction started: %s", pred_id)
-
-        for _ in range(60):
-            await asyncio.sleep(2)
-            sr = await client.get(
-                f"{FASHN_BASE}/status/{pred_id}",
-                headers={"Authorization": f"Bearer {FASHN_API_KEY}"},
-            )
-            if sr.status_code >= 400:
-                raise FashnError(f"FASHN /status {sr.status_code}: {sr.text[:200]}")
-            sdata = sr.json()
-            status = sdata.get("status")
-            if status == "completed":
-                output = sdata.get("output") or []
-                if not output:
-                    raise FashnError("Нейросеть вернула пустой результат")
-                return output[0]
-            if status == "failed":
-                raise FashnError(str(sdata.get("error") or "failed"))
-        raise FashnError("Тайм-аут ожидания результата")
+    if isinstance(result, (list, tuple)) and result:
+        first = result[0]
+        if isinstance(first, str):
+            return first
+        if isinstance(first, dict) and "path" in first:
+            return first["path"]
+    if isinstance(result, str):
+        return result
+    raise TryOnError(f"Неожиданный формат ответа: {type(result).__name__}")
 
 
 @dp.message(F.photo)
@@ -156,7 +157,7 @@ async def handle_other(message: Message) -> None:
 
 
 async def main() -> None:
-    log.info("Bot starting... model=%s", FASHN_MODEL)
+    log.info("Bot starting... space=%s", HF_SPACE)
     await dp.start_polling(bot)
 
 
