@@ -35,7 +35,9 @@ WELCOME = (
     "Пришли мне <b>ОДНИМ альбомом 2 фото</b>:\n"
     "1️⃣ Своё фото в полный рост\n"
     "2️⃣ Фото вещи (одежды), которую хочешь примерить\n\n"
-    "💡 В Telegram: жми скрепку 📎 → выбери обе фотки → отправь.\n\n"
+    "💡 В Telegram: жми скрепку 📎 → выбери обе фотки → отправь.\n"
+    "💬 Можешь добавить <b>подпись</b> к альбому (например: «красный топ», "
+    "«джинсы», «платье в цветочек») — это улучшит результат.\n\n"
     "⏱ Примерка занимает 1–3 минуты (бесплатная нейросеть, иногда очередь)."
 )
 
@@ -74,6 +76,8 @@ async def _process_album(gid: str) -> None:
     photos.sort(key=lambda m: m.message_id)
     model_msg, garment_msg = photos[0], photos[1]
 
+    garment_des = next((p.caption.strip() for p in photos if p.caption), "clothing")[:100]
+
     status = await model_msg.answer("⏳ Скачиваю фото...")
     await bot.send_chat_action(model_msg.chat.id, ChatAction.UPLOAD_PHOTO)
 
@@ -84,7 +88,7 @@ async def _process_album(gid: str) -> None:
             garment_path = await _download_photo(garment_msg.photo[-1].file_id, tmp_dir / "garment.jpg")
 
             await status.edit_text("⏳ Примеряю на бесплатной нейросети (1–3 минуты)...")
-            result_path = await asyncio.to_thread(_try_on, model_path, garment_path)
+            result_path = await asyncio.to_thread(_try_on, model_path, garment_path, garment_des)
 
             await model_msg.answer_photo(
                 FSInputFile(result_path),
@@ -109,7 +113,7 @@ async def _download_photo(file_id: str, dest: Path) -> Path:
     return dest
 
 
-def _try_on(model_path: Path, garment_path: Path) -> str:
+def _try_on(model_path: Path, garment_path: Path, garment_des: str) -> str:
     try:
         client = Client(HF_SPACE, verbose=False)
     except Exception as e:
@@ -123,10 +127,10 @@ def _try_on(model_path: Path, garment_path: Path) -> str:
                 "composite": None,
             },
             garm_img=handle_file(str(garment_path)),
-            garment_des="clothing",
+            garment_des=garment_des,
             is_checked=True,
-            is_checked_crop=False,
-            denoise_steps=30,
+            is_checked_crop=True,
+            denoise_steps=40,
             seed=42,
             api_name="/tryon",
         )
