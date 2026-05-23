@@ -16,7 +16,8 @@ load_dotenv()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 HF_SPACE = os.getenv("HF_SPACE", "yisol/IDM-VTON")
-HF_TOKEN = os.getenv("HF_TOKEN") or None
+# gradio_client picks the token up from the HF_TOKEN env var automatically;
+# we don't pass it as a kwarg because the parameter name varies between versions.
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,7 +111,7 @@ async def _download_photo(file_id: str, dest: Path) -> Path:
 
 def _try_on(model_path: Path, garment_path: Path) -> str:
     try:
-        client = Client(HF_SPACE, hf_token=HF_TOKEN, verbose=False)
+        client = Client(HF_SPACE, verbose=False)
     except Exception as e:
         raise TryOnError(f"Не удалось подключиться к Hugging Face Space ({HF_SPACE}): {e}")
 
